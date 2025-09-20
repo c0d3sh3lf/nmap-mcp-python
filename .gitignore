@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyi
+env/
+venv/
+.env
+.env.*
+
+# Byte-compiled / distribution
+build/
+develop-eggs/
+dist/
+eggs/
+*.egg-info/
+.eggs/
+
+# Pytest / tox
+.cache
+.pytest_cache/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docker
+docker-compose.override.yml
+docker-compose.yml
+*.log
+
+# Kubernetes manifests (if you don't want to track)
+k8s/*.local.yaml
+
+# virtualenv
+.venv/
+venv/
+
+# VS Code settings
+.vscode/*
+
+# MacOS
+.DS_Store
+
+# JetBrains
+.idea/
+
+# Local secrets & keys
+*.pem
+*.key

@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-nmap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-nmap
+  template:
+    metadata:
+      labels:
+        app: mcp-nmap
+    spec:
+      containers:
+        - name: mcp-nmap
+          image: your-registry/mcp-nmap-fastapi:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-nmap-secret
+                  key: API_KEY
+          # If your scans require special net capabilities, you may need to use hostNetwork or set securityContext:
+          # securityContext:
+          #   capabilities:
+          #     add: ["NET_RAW", "NET_ADMIN"]
+      # Optional: restrict who can access this pod using NetworkPolicy in your cluster
