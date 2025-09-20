@@ -2,20 +2,27 @@ import time
 import uuid
 import asyncio
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Depends, Query
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Query, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from .models import ScanRequest, JobStatus, ScanResult
+
+from .models import (
+    ScanRequest, JobStatus, ScanResult,
+    LoginRequest, TokenPair, RefreshRequest
+)
 from .job_store import job_store
 from .nmap_runner import run_nmap_blocking
-from .config import API_KEY, MAX_SCAN_SECONDS
+from .config import AUTH_USERNAME, AUTH_PASSWORD, ACCESS_TOKEN_EXPIRE_MINUTES
+from .auth import create_access_token, create_refresh_token, decode_token
+from .jwt_middleware import JWTAuthMiddleware
 
 app = FastAPI(
     title="MCP Nmap FastAPI Server",
-    version="0.1.1",
-    description="Run nmap scans via REST API (use only with authorization)"
+    version="0.2.0",
+    description="Run nmap scans via REST API (JWT-protected)."
 )
 
+# CORS (adjust origins as needed)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,16 +30,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def verify_api_key(request: Request):
-    header_key = request.headers.get("x-api-key")
-    if not header_key or header_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+# JWT middleware: protect everything except public paths
+app.add_middleware(
+    JWTAuthMiddleware,
+    public_paths=["/health"]
+)
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "time": time.time()}
 
-@app.post("/scan", dependencies=[Depends(verify_api_key)])
+# === Auth endpoints ===
+@app.post("/auth/login", response_model=TokenPair, tags=["auth"])
+async def login(body: LoginRequest):
+    if body.username != AUTH_USERNAME or body.password != AUTH_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    access = create_access_token(subject=body.username)
+    refresh = create_refresh_token(subject=body.username)
+    return TokenPair(
+        access_token=access,
+        refresh_token=refresh,
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+@app.post("/auth/refresh", response_model=TokenPair, tags=["auth"])
+async def refresh_token(body: RefreshRequest):
+    import jwt
+    try:
+        claims = decode_token(body.refresh_token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    if claims.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    subject = claims.get("sub")
+    access = create_access_token(subject=subject)
+    # You can choose whether to rotate refresh here; we’ll keep the old one valid until it expires.
+    return TokenPair(
+        access_token=access,
+        refresh_token=body.refresh_token,
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+# === Scan endpoints (protected by JWT middleware) ===
+@app.post("/scan")
 async def start_scan(
     scan_req: ScanRequest,
     background: BackgroundTasks,
@@ -52,10 +95,10 @@ async def start_scan(
     )
     job_store.add_job(job)
 
-    timeout_seconds = scan_req.max_seconds if scan_req.max_seconds else MAX_SCAN_SECONDS
+    timeout_seconds = scan_req.max_seconds if scan_req.max_seconds else None
     args = scan_req.args or []
 
-    # Synchronous worker function (safe for Starlette BackgroundTasks).
+    # Synchronous worker for BackgroundTasks
     def _run_and_store_sync():
         job_store.update_job(job_id, status="running", started_at=time.time())
         exit_code, raw_xml, parsed, error = run_nmap_blocking(target, args, timeout_seconds)
@@ -77,8 +120,6 @@ async def start_scan(
         job_store.set_result(job_id, result)
 
     if sync:
-        # Run the blocking scan off the event loop to avoid blocking the request
-        # but *await* its completion (client waits).
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _run_and_store_sync)
         return JSONResponse(
@@ -86,18 +127,17 @@ async def start_scan(
             content={"job_id": job_id, "status": job_store.get_job(job_id).status}
         )
     else:
-        # Fire-and-forget in Starlette’s background thread (no asyncio calls here).
         background.add_task(_run_and_store_sync)
         return {"job_id": job_id, "status": "queued"}
 
-@app.get("/scan/{job_id}", dependencies=[Depends(verify_api_key)])
+@app.get("/scan/{job_id}")
 async def get_job(job_id: str):
     job = job_store.get_job(job_id)
     if not job:
         raise HTTPException(404, "job not found")
     return job
 
-@app.get("/scan/{job_id}/result", dependencies=[Depends(verify_api_key)])
+@app.get("/scan/{job_id}/result")
 async def get_result(job_id: str):
     job = job_store.get_job(job_id)
     if not job:

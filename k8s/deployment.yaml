@@ -14,18 +14,39 @@ spec:
     spec:
       containers:
         - name: mcp-nmap
-          image: your-registry/mcp-nmap-fastapi:latest
+          image: invad3rsam/mcp-nmap-python:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+              name: nmap-mcp-port
           env:
-            - name: API_KEY
+            - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: mcp-nmap-secret
-                  key: API_KEY
+                  key: SECRET_KEY
+            - name: AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-nmap-secret
+                  key: AUTH_USERNAME
+            - name: AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-nmap-secret
+                  key: AUTH_PASSWORD
+            - name: ACCESS_TOKEN_EXPIRE_MINUTES
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-nmap-secret
+                  key: ACCESS_TOKEN_EXPIRE_MINUTES
+            - name: REFRESH_TOKEN_EXPIRE_HOURS
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-nmap-secret
+                  key: REFRESH_TOKEN_EXPIRE_HOURS
           # If your scans require special net capabilities, you may need to use hostNetwork or set securityContext:
-          # securityContext:
-          #   capabilities:
-          #     add: ["NET_RAW", "NET_ADMIN"]
+          securityContext:
+            capabilities:
+              add: ["NET_RAW", "NET_ADMIN"]
       # Optional: restrict who can access this pod using NetworkPolicy in your cluster
