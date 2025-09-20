@@ -10,7 +10,11 @@ from .job_store import job_store
 from .nmap_runner import run_nmap_blocking
 from .config import API_KEY, MAX_SCAN_SECONDS
 
-app = FastAPI(title="MCP Nmap FastAPI Server", version="0.1.0", description="Run nmap scans via REST API (use only with authorization)")
+app = FastAPI(
+    title="MCP Nmap FastAPI Server",
+    version="0.1.1",
+    description="Run nmap scans via REST API (use only with authorization)"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,12 +33,11 @@ async def health():
     return {"status": "ok", "time": time.time()}
 
 @app.post("/scan", dependencies=[Depends(verify_api_key)])
-async def start_scan(scan_req: ScanRequest, background: BackgroundTasks, sync: Optional[bool] = Query(False, description="If true, wait for scan to complete (not recommended for long scans)")):
-    """
-    Start an nmap scan. By default the scan runs in background and returns job_id.
-    Pass sync=true to wait for completion (blocking).
-    """
-    # Basic validation (you can expand)
+async def start_scan(
+    scan_req: ScanRequest,
+    background: BackgroundTasks,
+    sync: Optional[bool] = Query(False, description="If true, wait for scan to complete (not recommended for long scans)")
+):
     target = scan_req.target.strip()
     if not target:
         raise HTTPException(400, "target is required")
@@ -50,15 +53,20 @@ async def start_scan(scan_req: ScanRequest, background: BackgroundTasks, sync: O
     job_store.add_job(job)
 
     timeout_seconds = scan_req.max_seconds if scan_req.max_seconds else MAX_SCAN_SECONDS
+    args = scan_req.args or []
 
-    async def _run_and_store():
-        # update job running
+    # Synchronous worker function (safe for Starlette BackgroundTasks).
+    def _run_and_store_sync():
         job_store.update_job(job_id, status="running", started_at=time.time())
-        exit_code, raw_xml, parsed, error = await asyncio.get_event_loop().run_in_executor(
-            None, run_nmap_blocking, target, scan_req.args or [], timeout_seconds
-        )
+        exit_code, raw_xml, parsed, error = run_nmap_blocking(target, args, timeout_seconds)
         finished_at = time.time()
-        job_store.update_job(job_id, status="done" if exit_code == 0 else "error", finished_at=finished_at, exit_code=exit_code, error=error)
+        job_store.update_job(
+            job_id,
+            status="done" if exit_code == 0 else "error",
+            finished_at=finished_at,
+            exit_code=exit_code,
+            error=error
+        )
         result = ScanResult(
             job_id=job_id,
             raw_xml=raw_xml,
@@ -69,12 +77,17 @@ async def start_scan(scan_req: ScanRequest, background: BackgroundTasks, sync: O
         job_store.set_result(job_id, result)
 
     if sync:
-        # run synchronously (blocks)
-        await _run_and_store()
-        return JSONResponse(status_code=200, content={"job_id": job_id, "status": job_store.get_job(job_id).status})
+        # Run the blocking scan off the event loop to avoid blocking the request
+        # but *await* its completion (client waits).
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _run_and_store_sync)
+        return JSONResponse(
+            status_code=200,
+            content={"job_id": job_id, "status": job_store.get_job(job_id).status}
+        )
     else:
-        # schedule in background
-        background.add_task(asyncio.ensure_future, _run_and_store())
+        # Fire-and-forget in Starlette’s background thread (no asyncio calls here).
+        background.add_task(_run_and_store_sync)
         return {"job_id": job_id, "status": "queued"}
 
 @app.get("/scan/{job_id}", dependencies=[Depends(verify_api_key)])
@@ -94,7 +107,6 @@ async def get_result(job_id: str):
         if job.status in ("queued", "running"):
             return {"status": job.status, "message": "result not ready"}
         return {"status": job.status, "message": "no result"}
-    # return both parsed JSON and raw XML
     return {
         "status": job.status,
         "exit_code": result.exit_code,
